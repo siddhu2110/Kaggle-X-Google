@@ -1,0 +1,184 @@
+# @title Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+
+# mcp_agent_workflow_fixed.py
+# Same demo as before but robust to "asyncio.run() cannot be called from a running event loop"
+import asyncio
+import uuid
+from enum import Enum, auto
+
+class EventType(Enum):
+    REQUEST_CONFIRMATION = auto()
+    APPROVAL = auto()
+    REJECTION = auto()
+    TOOL_RESULT = auto()
+
+class Event:
+    def init(self, invocation_id: str, type: EventType, payload=None):
+        self.invocation_id = invocation_id
+        self.type = type
+        self.payload = payload
+
+# Global (simulated) event bus
+EVENT_BUS = asyncio.Queue()
+
+# Simulated "agent" state storage
+AGENT_STATE = {}
+
+async def call_agent_run_async(invocation_id: str, input_data: dict):
+    print(f"[agent-run] Started agent invocation {invocation_id} with input {input_data}")
+    AGENT_STATE[invocation_id] = {"status": "running", "progress": 0}
+
+    for step in range(1, 6):
+        await asyncio.sleep(0.6)
+        AGENT_STATE[invocation_id]["progress"] = step * 20
+        print(f"[agent-run] invocation {invocation_id} progress {AGENT_STATE[invocation_id]['progress']}%")
+
+        if step == 2 and input_data.get("needs_approval", False):
+            await EVENT_BUS.put(Event(invocation_id, EventType.REQUEST_CONFIRMATION, payload={
+                "message": "Please confirm to continue shipping order",
+                "details": {"num_containers": input_data.get("num_containers", 1)}
+            }))
+            print(f"[agent-run] invocation {invocation_id} paused, awaiting human confirmation")
+            AGENT_STATE[invocation_id]["status"] = "paused"
+            return
+
+    AGENT_STATE[invocation_id]["status"] = "completed"
+    print(f"[agent-run] invocation {invocation_id} completed without requiring approval")
+    await EVENT_BUS.put(Event(invocation_id, EventType.TOOL_RESULT, payload={"result": "order placed"}))
+
+async def resume_agent_with_same_invocation(invocation_id: str, input_data: dict):
+    status = AGENT_STATE.get(invocation_id, {}).get("status")
+    if status != "paused":
+        print(f"[resume] invocation {invocation_id} is not paused (status={status}); nothing to resume")
+        return
+
+    print(f"[resume] Resuming invocation {invocation_id} with same invocation id")
+    AGENT_STATE[invocation_id]["status"] = "running"
+
+    for step in range(3, 6):
+        await asyncio.sleep(0.6)
+        AGENT_STATE[invocation_id]["progress"] = step * 20
+        print(f"[agent-run/resume] invocation {invocation_id} progress {AGENT_STATE[invocation_id]['progress']}%")
+
+    AGENT_STATE[invocation_id]["status"] = "completed"
+    print(f"[agent-run/resume] invocation {invocation_id} completed after approval")
+    await EVENT_BUS.put(Event(invocation_id, EventType.TOOL_RESULT, payload={"result": "order placed after approval"}))
+
+async def check_for_approval(invocation_id: str, poll_timeout=0.2):
+    temp = []
+    found = None
+    try:
+        while True:
+            ev = await asyncio.wait_for(EVENT_BUS.get(), timeout=poll_timeout)
+            if ev.invocation_id == invocation_id:
+                found = ev
+                break
+            else:
+                temp.append(ev)
+    except asyncio.TimeoutError:
+        pass
+
+    for e in temp:
+        await EVENT_BUS.put(e)
+
+    return found
+
+async def request_confirmation_from_user(invocation_id: str):
+    # NOTE: input() inside notebooks works differently; if it doesn't suit you,
+    # replace this with a webhook or pre-seeded approval event.
+    print(f"[request] Requesting confirmation for invocation {invocation_id}. (type 'y' to approve, anything else to reject)")
+    loop = asyncio.get_running_loop()
+    approved = await loop.run_in_executor(None, input, "Approve? (y/n): ")
+    approved = approved.strip().lower() in ("y", "yes")
+    if approved:
+        await EVENT_BUS.put(Event(invocation_id, EventType.APPROVAL, payload={"by": "human"}))
+        print(f"[request] User approved invocation {invocation_id}")
+    else:
+        await EVENT_BUS.put(Event(invocation_id, EventType.REJECTION, payload={"by": "human"}))
+        print(f"[request] User rejected invocation {invocation_id}")
+
+async def controller_main():
+    # Path A (needs approval)
+    invocation_id_a = str(uuid.uuid4())
+    input_a = {"needs_approval": True, "num_containers": 10}
+    asyncio.create_task(call_agent_run_async(invocation_id_a, input_a))
+
+    while True:
+        ev = await check_for_approval(invocation_id_a)
+        if ev is None:
+            await asyncio.sleep(0.4)
+            continue
+
+        if ev.type == EventType.REQUEST_CONFIRMATION:
+            print(f"[controller] Received REQUEST_CONFIRMATION for {invocation_id_a}: {ev.payload}")
+            await request_confirmation_from_user(invocation_id_a)
+            continue
+
+        if ev.type == EventType.APPROVAL:
+            print(f"[controller] Approval received for {invocation_id_a}. Resuming agent with SAME invocation id.")
+            await resume_agent_with_same_invocation(invocation_id_a, input_a)
+            continue
+
+        if ev.type == EventType.REJECTION:
+            print(f"[controller] Rejection received for {invocation_id_a}. Marking invocation rejected.")
+            AGENT_STATE[invocation_id_a]["status"] = "rejected"
+            break
+
+        if ev.type == EventType.TOOL_RESULT:
+            print(f"[controller] Final result for {invocation_id_a}: {ev.payload}")
+            break
+
+    print("\n--- Now demonstrate Path B (no approval needed) ---\n")
+    # Path B (no approval)
+    invocation_id_b = str(uuid.uuid4())
+    input_b = {"needs_approval": False, "num_containers": 1}
+    asyncio.create_task(call_agent_run_async(invocation_id_b, input_b))
+
+    while True:
+        ev = await check_for_approval(invocation_id_b)
+        if ev is None:
+            await asyncio.sleep(0.3)
+            continue
+        if ev.type == EventType.TOOL_RESULT:
+            print(f"[controller] Path B result: {ev.payload}")
+            break
+
+    print("\nAll done. AGENT_STATE snapshot:")
+    for inv_id, state in AGENT_STATE.items():
+        print(inv_id, state)
+
+def run_controller_safely():
+    """Run controller_main() in both normal script and notebook environments."""
+    try:
+        # Preferred for normal scripts
+        asyncio.run(controller_main())
+    except RuntimeError as e:
+        if "running event loop" in str(e):
+            # We're inside an existing event loop (notebook / Kaggle).
+            # Use nest_asyncio to allow nested run_until_complete.
+            try:
+                import nest_asyncio
+            except Exception:
+                raise RuntimeError("nest_asyncio is required in this environment. Install it with pip install nest_asyncio")
+
+            nest_asyncio.apply()
+            loop = asyncio.get_event_loop()
+            # Now run_until_complete will work inside the notebook event loop.
+            loop.run_until_complete(controller_main())
+        else:
+            raise
+
+if __name__ == "main":
+    run_controller_safely()
