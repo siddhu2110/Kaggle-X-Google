@@ -1,0 +1,241 @@
+# @title Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Memory-management-for-session.ipynb (paste into a Kaggle notebook cell)
+
+import time
+import psutil
+import os
+import gc
+from collections import deque, Counter
+import re
+import pandas as pd
+from datetime import datetime
+
+# ---------------------------
+# Memory utilities
+# ---------------------------
+def mem_info():
+    p = psutil.Process(os.getpid())
+    mem = p.memory_info().rss / (1024**2)  # MB
+    return f"{mem:.2f} MB"
+
+def print_mem(label=""):
+    print(f"[{label}] Process memory: {mem_info()}")
+
+# ---------------------------
+# Simple text utilities
+# ---------------------------
+_sentence_split_re = re.compile(r'(?<=[.!?])\s+')
+
+def split_sentences(text):
+    return [s.strip() for s in _sentence_split_re.split(text) if s.strip()]
+
+def tokenize(text):
+    # lowercase, keep words
+    return re.findall(r'\b[a-z]{2,}\b', text.lower())
+
+# ---------------------------
+# Session implementation
+# ---------------------------
+class SessionEvent:
+    # **FIXED ERROR**: Changed _init_ to __init__
+    def __init__(self, role, text, timestamp=None):
+        self.role = role  # 'user' or 'agent'
+        self.text = text
+        self.ts = timestamp or datetime.utcnow()
+    
+    # **FIXED ERROR**: Changed _repr_ to __repr__
+    def __repr__(self):
+        return f"SessionEvent({self.role},{self.ts.isoformat()},len={len(self.text)})"
+
+class Session:
+    # **FIXED ERROR**: Changed _init_ to __init__
+    def __init__(self, session_id, max_events_keep=50):
+        self.session_id = session_id
+        self.events = deque()      # store recent events
+        self.state = {}            # summary/state info
+        self.summary_history = []  # compaction summaries
+        self.max_events_keep = max_events_keep
+
+    def add_event(self, role, text):
+        self.events.append(SessionEvent(role, text))
+        # simple state update example: count messages by role
+        self.state.setdefault("counts", {"user":0, "agent":0})
+        self.state["counts"][role] += 1
+
+        # enforce hard cap (avoid unbounded growth)
+        while len(self.events) > self.max_events_keep:
+            self._compact_oldest()
+        return True
+
+    def _compact_oldest(self):
+        # compact the oldest chunk (simple approach called internally)
+        # We compact the oldest half of stored events into a short summary
+        if len(self.events) <= 2:
+            return
+        n = max(1, len(self.events)//2)
+        to_compact = [self.events.popleft() for _ in range(n)]
+        summary = self._summarize_events(to_compact)
+        self.summary_history.append({
+            "timestamp": datetime.utcnow().isoformat(),
+            "summary": summary,
+            "compacted_count": len(to_compact)
+        })
+        # update state with summary (could be structured)
+        self.state.setdefault("compactions", 0)
+        self.state["compactions"] += 1
+
+    def compact(self, keep_recent=5, compress_to_sentences=3):
+        """
+        Explicit compaction: keep the most recent keep_recent events in detail,
+        summarize older events into one extractive summary and store in summary_history.
+        """
+        if len(self.events) <= keep_recent:
+            return None
+
+        # take older events (except last keep_recent)
+        older = []
+        while len(self.events) > keep_recent:
+            older.append(self.events.popleft())
+
+        summary = self._summarize_events(older, compress_to_sentences)
+        self.summary_history.append({
+            "timestamp": datetime.utcnow().isoformat(),
+            "summary": summary,
+            "compacted_count": len(older)
+        })
+        self.state.setdefault("compactions", 0)
+        self.state["compactions"] += 1
+        return summary
+
+    def _summarize_events(self, events_list, num_sentences=3):
+        """
+        Very simple extractive summarizer:
+        - score sentences by word frequency across the chunk
+        - pick top N sentences
+        """
+        text_blob = " ".join(ev.text for ev in events_list)
+        sentences = split_sentences(text_blob)
+        if not sentences:
+            return ""
+
+        # compute word frequencies
+        tokens = tokenize(text_blob)
+        freq = Counter(tokens)
+        if not freq:
+            return " ".join(sentences[:num_sentences])
+
+        # score each sentence
+        sent_scores = []
+        for s in sentences:
+            score = 0
+            for w in tokenize(s):
+                score += freq.get(w, 0)
+            sent_scores.append((score, s))
+
+        # pick top sentences by score (stable)
+        sent_scores.sort(reverse=True, key=lambda x: x[0])
+        chosen = [s for _, s in sent_scores[:num_sentences]]
+        # preserve original order
+        chosen_sorted = [s for s in sentences if s in chosen]
+        return " ".join(chosen_sorted)
+
+    def get_context(self):
+        """
+        Return a combined context: summaries + recent events text
+        This is what would be fed to a model in a real app.
+        """
+        parts = []
+        for h in self.summary_history:
+            parts.append(f"[COMPACTED on {h['timestamp']}] {h['summary']}")
+        for e in self.events:
+            parts.append(f"{e.role.upper()}: {e.text}")
+        return "\n".join(parts)
+
+    # **FIXED ERROR**: Changed _repr_ to __repr__
+    def __repr__(self):
+        return (f"Session(id={self.session_id}, events={len(self.events)}, "
+                f"summaries={len(self.summary_history)}, state={self.state})")
+
+
+# ---------------------------
+# Example usage: simulate chat and compaction
+# ---------------------------
+# **FIXED ERROR**: Removed the invalid 'String s' parameter
+def demo_session_compaction():
+    print_mem("start")
+    s = Session(session_id="demo-1", max_events_keep=200)
+
+    # simulate adding many short events (user+agent)
+    for i in range(1, 21):
+        s.add_event("user", f"User query about topic {i}. It mentions details like item {i} and something else.")
+        s.add_event("agent", f"Agent reply for query {i}. Suggestion: do step {i}.")
+    print_mem("after adding events")
+    print(s)  # show counts
+
+    # show current context length
+    print("\n--- Context before compact ---")
+    ctx_before = s.get_context()
+    print("Context length (chars):", len(ctx_before))
+    # compact to keep only last 6 events in detail
+    summary = s.compact(keep_recent=6, compress_to_sentences=3)
+    print("\n--- Compaction result ---")
+    print("Summary:", summary)
+    print(s)
+
+    print("\n--- Context after compact ---")
+    ctx_after = s.get_context()
+    print("Context length (chars):", len(ctx_after))
+    print_mem("end of demo")
+    return s
+
+# run demo
+session = demo_session_compaction()
+
+
+# ---------------------------
+# Memory-safe example: streaming a large CSV in chunks
+# ---------------------------
+def process_large_csv(path, chunksize=100000):
+    """
+    Demonstration of processing a large CSV file in chunks to avoid
+    loading the whole file into memory.
+    Replace path with a big CSV available on Kaggle or upload your own.
+    """
+    print_mem("csv-start")
+    agg_counts = Counter()
+    rows_processed = 0
+
+    # pandas read_csv with chunksize returns an iterator of DataFrame chunks
+    for chunk in pd.read_csv(path, chunksize=chunksize):
+        # example processing: count occurrences of values in a column
+        # Replace 'colname' below with an actual column name from your CSV
+        if 'colname' in chunk.columns:
+            agg_counts.update(chunk['colname'].astype(str).tolist())
+        rows_processed += len(chunk)
+
+        # manual cleanup
+        del chunk
+        gc.collect()
+
+        # print progress occasionally
+        if rows_processed % (chunksize*2) == 0:
+            print(f"Processed {rows_processed} rows. Mem: {mem_info()}")
+
+    print(f"Finished processing {rows_processed} rows. Mem: {mem_info()}")
+    return agg_counts
+
+# NOTE: to run the CSV demo, point path to a CSV file in your Kaggle data assets.
+# Example:
+# path = "/kaggle/input/large-dataset/myfile.csv"
+# counts = process_large_csv(path, chunksize=50000)
