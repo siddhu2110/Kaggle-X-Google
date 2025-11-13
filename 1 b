@@ -1,0 +1,91 @@
+# --- FIX: Add API Key Setup at the top ---
+import os
+import asyncio
+from google.adk.agents import Agent
+from google.adk.runners import InMemoryRunner
+from google.adk.tools import google_search
+from google.adk.models.google_llm import Gemini
+from google.genai import types
+# Import the client for direct initialization
+from google.genai import Client 
+# We need to import the top-level package for the configure fix
+from google import genai
+from kaggle_secrets import UserSecretsClient
+
+print("--- Running API Key Setup ---")
+try:
+    # 1. Retrieve the API Key from Kaggle Secrets
+    GOOGLE_API_KEY = UserSecretsClient().get_secret("GOOGLE_API_KEY")
+    
+    # 2. Set the environment variables
+    os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
+    os.environ["GOOGLE_GEMINI_USE_VERTEXAI"] = "FALSE"
+    
+    # 3. FINAL FIX: Use the client constructor to set the key, 
+    # and then set the key on the top-level genai object for robustness
+    client = Client(api_key=GOOGLE_API_KEY)
+    genai.client = client
+    
+    print("✅ Gemini API configured successfully.")
+except Exception as e:
+    # We must ensure the error message doesn't appear if the key is missing
+    print(f"❌ Authentication Error: Missing API Key.")
+    
+# --------------------------------------------------------------------------
+
+root_agent = Agent(
+    name="helpful_assistant",
+    # The Gemini() model now successfully initializes because the client is accessible
+    model=Gemini(model_name="gemini-1.5-flash"), 
+    description="A simple agent that can answer general questions.",
+    instruction="You are a helpful assistant. Use Google Search for current info or if unsure.",
+    # Using the imported google_search function directly
+    tools=[google_search], 
+)
+
+
+MY_APP_NAME = "my_colab_app"
+MY_USER_ID = "colab_user_123"
+MY_SESSION_ID = "session_456"
+
+
+runner = InMemoryRunner(
+    agent=root_agent,
+    app_name=MY_APP_NAME
+)
+
+
+async def main():
+    print("\nRunning agent...")
+    
+    
+    print(f"Creating session: {MY_SESSION_ID} for app: {MY_APP_NAME}")
+    await runner.session_service.create_session(
+        user_id=MY_USER_ID,
+        session_id=MY_SESSION_ID,
+        app_name=MY_APP_NAME
+    )
+    
+    
+    prompt_text = "What is the capitol of Canada?"
+    message = types.Content(role="user", parts=[types.Part(text=prompt_text)])
+    
+    
+    events = runner.run_async(
+        user_id=MY_USER_ID,
+        session_id=MY_SESSION_ID,
+        new_message=message
+    )
+    
+    print("\nAgent Response:")
+    
+    async for event in events:
+        if event.is_final_response():
+            print(event.content.parts[0].text)
+
+
+# Execute the main async function
+if os.environ.get("GOOGLE_API_KEY"):
+    await main()
+else:
+    print("Agent execution skipped due to missing API Key.")
