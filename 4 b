@@ -1,0 +1,158 @@
+# @title Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+#!/usr/bin/env python3
+"""
+crt_harness.py
+
+Usage:
+  python crt_harness.py --tests tests.json --out report.json --csv report.csv --threshold 0.85
+
+What it does:
+- Loads tests (list of {"id", "query", "expected"})
+- Runs run_agent_on_query(query) to produce actual result (stubbed - replace with your agent)
+- Compares actual vs expected:
+    - exact_match
+    - similarity (difflib SequenceMatcher)
+    - pass if similarity >= threshold or exact match
+- Saves JSON and CSV evaluation reports
+- Prints summary to console
+"""
+
+import json
+import csv
+import argparse
+from difflib import SequenceMatcher
+from datetime import datetime
+from typing import Dict, Any, List
+
+# ---------------------------
+# Replace this function: put your agent / model call here
+# ---------------------------
+def run_agent_on_query(query: str) -> str:
+    """
+    Stub: run your agent on the query and return the textual response.
+    Replace the body with code that calls your actual agent (function, API, model, etc).
+    For demo, this returns a simple transformation.
+    """
+    # Example stub behavior (echo + minor change). Replace with actual call.
+    return f"RESPONSE: {query.strip()}"
+
+# ---------------------------
+# Comparison utilities
+# ---------------------------
+def similarity(a: str, b: str) -> float:
+    return SequenceMatcher(None, a, b).ratio()
+
+def compare_results(expected: str, actual: str, threshold: float = 0.85) -> Dict[str, Any]:
+    ematch = expected.strip() == actual.strip()
+    sim = similarity(expected, actual)
+    passed = ematch or (sim >= threshold)
+    return {
+        "expected": expected,
+        "actual": actual,
+        "exact_match": ematch,
+        "similarity": round(sim, 4),
+        "passed": passed
+    }
+
+# ---------------------------
+# Main harness
+# ---------------------------
+def load_tests(path: str) -> List[Dict[str, Any]]:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    # expect list of objects: {"id": "...", "query": "...", "expected": "..."}
+    assert isinstance(data, list), "tests.json must contain a list of test objects"
+    return data
+
+def write_report_json(report: Dict[str, Any], path: str):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+
+def write_report_csv(rows: List[Dict[str, Any]], path: str):
+    if not rows:
+        return
+    fieldnames = list(rows[0].keys())
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in rows:
+            writer.writerow(r)
+
+def run_harness(tests_path: str, out_json: str, out_csv: str, threshold: float):
+    tests = load_tests(tests_path)
+    results = []
+    passed_count = 0
+
+    for t in tests:
+        tid = t.get("id", "")
+        query = t.get("query", "")
+        expected = t.get("expected", "")
+        start = datetime.utcnow().isoformat()
+        actual = run_agent_on_query(query)
+        end = datetime.utcnow().isoformat()
+
+        comp = compare_results(expected, actual, threshold=threshold)
+        row = {
+            "id": tid,
+            "query": query,
+            "expected": expected,
+            "actual": actual,
+            "exact_match": comp["exact_match"],
+            "similarity": comp["similarity"],
+            "passed": comp["passed"],
+            "start_time_utc": start,
+            "end_time_utc": end
+        }
+        results.append(row)
+        if comp["passed"]:
+            passed_count += 1
+
+        print(f"[{tid}] passed={comp['passed']} sim={comp['similarity']} exact={comp['exact_match']}")
+
+    summary = {
+        "total": len(tests),
+        "passed": passed_count,
+        "failed": len(tests) - passed_count,
+        "pass_rate": round(passed_count / max(1, len(tests)), 4)
+    }
+
+    report = {
+        "generated_at": datetime.utcnow().isoformat(),
+        "threshold": threshold,
+        "summary": summary,
+        "results": results
+    }
+
+    write_report_json(report, out_json)
+    write_report_csv(results, out_csv)
+    print("\n=== Summary ===")
+    print(json.dumps(summary, indent=2))
+    print(f"Wrote JSON report to: {out_json}")
+    print(f"Wrote CSV report to: {out_csv}")
+
+# ---------------------------
+# CLI
+# ---------------------------
+def main():
+    parser = argparse.ArgumentParser(description="CRT test harness")
+    parser.add_argument("--tests", required=True, help="Path to tests JSON file")
+    parser.add_argument("--out", default="report.json", help="Output JSON report path")
+    parser.add_argument("--csv", default="report.csv", help="Output CSV report path")
+    parser.add_argument("--threshold", type=float, default=0.85, help="similarity threshold for pass")
+    args = parser.parse_args()
+    run_harness(args.tests, args.out, args.csv, args.threshold)
+
+if __name__ == "_main_":
+    main()
