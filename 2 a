@@ -1,0 +1,89 @@
+# @title Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# --- Currency Converter Agent (no GenAI SDK) ---
+# Works entirely in Kaggle or any Python environment.
+
+# 1️⃣ Define tool: get_fee_for_payment_method
+def get_fee_for_payment_method(payment_method: str) -> dict:
+    """Returns transaction fees based on payment method (mock)."""
+    payment_method = payment_method.lower()
+    fee_table = {
+        "visa": {"fee_percent": 1.5, "fixed_fee": 0.30},
+        "mastercard": {"fee_percent": 1.6, "fixed_fee": 0.25},
+        "paypal": {"fee_percent": 2.9, "fixed_fee": 0.35},
+        "bank_transfer": {"fee_percent": 0.5, "fixed_fee": 1.00}
+    }
+    return fee_table.get(payment_method, {"fee_percent": 2.0, "fixed_fee": 0.50})
+
+# 2️⃣ Define tool: get_exchange_rate
+def get_exchange_rate(src_currency: str, dst_currency: str) -> float:
+    """Mock exchange rate lookup (base: USD)."""
+    rates_to_usd = {
+        "USD": 1.0,
+        "EUR": 1.10,
+        "INR": 0.012,
+        "GBP": 1.30,
+        "JPY": 0.0068
+    }
+
+    src = src_currency.upper()
+    dst = dst_currency.upper()
+
+    if src not in rates_to_usd or dst not in rates_to_usd:
+        raise ValueError(f"Unsupported currencies: {src}, {dst}")
+
+    # Convert via USD
+    src_to_usd = rates_to_usd[src]
+    dst_to_usd = rates_to_usd[dst]
+    rate = src_to_usd / dst_to_usd
+    return round(rate, 6)
+
+# 3️⃣ Define: CurrencyAgent that uses the tools
+class CurrencyAgent:
+    def _init_(self):
+        pass
+
+    def convert_currency(self, amount: float, src: str, dst: str, payment_method: str):
+        """Uses tools to calculate total conversion including fees."""
+        fee_info = get_fee_for_payment_method(payment_method)
+        rate = get_exchange_rate(src, dst)
+
+        fee_percent = fee_info["fee_percent"]
+        fixed_fee = fee_info["fixed_fee"]
+
+        # calculate total fees in source currency
+        fee_total_src = (amount * (fee_percent / 100)) + fixed_fee
+        amount_after_fee = amount - fee_total_src
+        amount_converted = amount_after_fee * rate
+
+        # output summary
+        result = {
+            "Source Amount": f"{amount:.2f} {src.upper()}",
+            "Exchange Rate": f"1 {src.upper()} = {rate:.4f} {dst.upper()}",
+            "Payment Method": payment_method.capitalize(),
+            "Fee %": f"{fee_percent}%",
+            "Fixed Fee": f"{fixed_fee} {src.upper()}",
+            "Total Fee": f"{fee_total_src:.2f} {src.upper()}",
+            "Net Amount (after fee)": f"{amount_after_fee:.2f} {src.upper()}",
+            "Converted Amount": f"{amount_converted:.2f} {dst.upper()}"
+        }
+
+        print("💱 Currency Conversion Summary:")
+        for k, v in result.items():
+            print(f"• {k}: {v}")
+
+        return result
+
+# 4️⃣ Run an example
+agent = CurrencyAgent()
+agent.convert_currency(250, "USD", "INR", "paypal")
