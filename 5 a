@@ -1,0 +1,162 @@
+import asyncio
+import uuid
+import sys
+from typing import Any
+
+# --- Assumed Imports (You must have these definitions available) ---
+# NOTE: These types and services must be imported or defined in your environment
+# (e.g., from google_adk.models import types; from google_adk.services import InMemorySessionService, Runner)
+
+# Placeholder for required types and services (replace with actual imports)
+class types:
+    class Content:
+        def __init__(self, parts, role="user"): self.parts = parts
+    class Part:
+        def __init__(self, text): self.text = text
+    def __init__(self): pass
+
+class Runner:
+    def __init__(self, agent, app_name, session_service): self.agent = agent
+    async def run_async(self, user_id, session_id, new_message):
+        # FIX FOR PLACEHOLDER: Ensure the placeholder yields an object 
+        # that *has* a 'content' attribute, which is the Content object.
+        # This simulates a real ADK Event.
+        class Event:
+            def __init__(self, content): self.content = content
+            # Add a mock is_final_response for demonstration purposes
+            def is_final_response(self): return True 
+            
+        yield Event(types.Content(parts=[types.Part(text="Placeholder response. This is streaming...")]))
+        yield Event(types.Content(parts=[types.Part(text=" and final.")]))
+
+
+# Dummy implementations for required functions/variables (unchanged)
+def run_coro_safely(coro):
+    try:
+        asyncio.run(coro)
+        return True
+    except Exception:
+        return False
+
+async def create_session_if_needed_async(runner, user_id, session_id):
+    pass # Placeholder
+
+def _make_content_from_prompt(prompt):
+    return types.Content(parts=[types.Part(text=prompt)])
+
+class InMemorySessionService:
+    async def create_session(self, app_name, user_id, session_id):
+        pass # Placeholder
+
+# Assume these are defined elsewhere in the module (unchanged)
+mock_mode = False
+_client_error_cls = None 
+customer_support_agent = None 
+runner = None # Ensure runner is set up for run_query if used
+
+# --- 1. ASYNCHRONOUS TEST FUNCTION (Corrected) ---
+
+async def test_a2a_communication(user_query: str):
+    """
+    Test the A2A communication, streaming the full response.
+    """
+    session_service = InMemorySessionService()
+    app_name = "support_app"
+    user_id = "demo_user"
+    session_id = f"demo_session_{uuid.uuid4().hex[:8]}"
+
+    await session_service.create_session(
+        app_name=app_name, user_id=user_id, session_id=session_id
+    )
+
+    runner = Runner(
+        agent=customer_support_agent, app_name=app_name, session_service=session_service
+    )
+
+    test_content = types.Content(parts=[types.Part(text=user_query)])
+
+    print(f"\n👤 Customer: {user_query}")
+    print(f"\n🎧 Support Agent response (Streaming):")
+    print("-" * 60)
+
+    # Run the agent asynchronously
+    async for event in runner.run_async(
+        user_id=user_id, session_id=session_id, new_message=test_content
+    ):
+        # FIX: The condition for printing is simply checking for content availability, 
+        # allowing the response to stream completely.
+        # The previous error occurred because 'is_final_response' was called on event.content.
+        if hasattr(event, "content") and event.content:
+            for part in event.content.parts:
+                if hasattr(part, "text"):
+                    print(part.text, end="", flush=True)
+
+    print("\n" + "-" * 60)
+
+# --- 2. SYNCHRONOUS RUNNER WRAPPER (Unchanged as the primary fix was in the async function) ---
+
+# NOTE: The synchronous run_query logic is fine as it uses hasattr checks.
+
+def run_query(prompt: str) -> Any:
+    # ... (body of run_query remains unchanged as the error was in the async test function)
+    user_id = "test_user_adk"
+    session_id = "test_session_1"
+    
+    # Placeholder setup for run_query
+    session_service = InMemorySessionService()
+    app_name = "support_app"
+    global runner
+    runner = Runner(agent=customer_support_agent, app_name=app_name, session_service=session_service)
+    
+    # Ensure session when not mock (synchronous wrapper for async function)
+    if not mock_mode:
+        ok = run_coro_safely(create_session_if_needed_async(runner, user_id, session_id))
+        if not ok:
+            print("Warning: Could not create session; proceeding may fail.", file=sys.stderr)
+
+    message = _make_content_from_prompt(prompt)
+    final_content = None
+    has_yielded = False 
+
+    try:
+        # NOTE: runner.run() is typically the synchronous version of the runner method
+        # This will fail in this placeholder setup as the placeholder runner is async only.
+        # Assuming a real ADK Runner here.
+        for event in runner.run(user_id=user_id, session_id=session_id, new_message=message):
+            has_yielded = True
+            if hasattr(event, "content") and event.content:
+                final_content = event.content
+            elif hasattr(event, "message") and event.message:
+                final_content = event.message
+            elif hasattr(event, "output") and event.output:
+                final_content = event.output
+            elif hasattr(event, "data") and event.data:
+                final_content = event.data
+        
+        return final_content
+
+    except Exception as e:
+        err_str = str(e) + repr(e)
+        is_api_key_invalid = False
+        if "API key not valid" in err_str or "API_KEY_INVALID" in err_str:
+            is_api_key_invalid = True
+        
+        if is_api_key_invalid:
+            print("\nERROR: The API key is invalid.", file=sys.stderr)
+            return types.Content(parts=[types.Part(text=
+                "(fallback) The API key provided is invalid. Set a valid key."
+            )])
+        
+        if final_content is not None:
+            print(f"Warning: Agent failed mid-stream ({repr(e)}). Returning partial content.", file=sys.stderr)
+            return final_content
+        
+        else:
+            print("Runtime error while running the agent:", repr(e), file=sys.stderr)
+            return types.Content(parts=[types.Part(text=f"(fallback) Agent runtime failed: {e}")])
+
+
+# --- Example of running the asynchronous test (requires an async environment) ---
+# FIX APPLIED to the call: The issue was with the logic inside the function, not the call itself.
+# print("🧪 Testing A2A Communication...\n")
+# await test_a2a_communication("Can you tell me about the iPhone 15 Pro? Is it in stock?")
